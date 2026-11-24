@@ -116,9 +116,30 @@ them to keyboard keys in Steam Input. A good starting point:
 **[Gamepad Grimoire](https://github.com/sebastianstupak/gamepad-grimoire)** draws your
 binds on a picture of *your* controller (front and back), lights up buttons as you
 hold them, and lets you set everything up with the controller alone — no keyboard or
-chat needed. It replaces the older DeckSetup addon.
+chat needed. It replaces the older DeckSetup addon. Install it like any other addon
+(below).
 
-## 5. (Optional) SSH for remote control
+## 5. Installing addons
+
+WoW addons live in the AddOns folder inside the Proton prefix:
+
+```
+~/.local/share/Steam/steamapps/compatdata/<appid>/pfx/drive_c/Program Files (x86)/World of Warcraft/<flavor>/Interface/AddOns/
+```
+
+Drop an addon's folder there with **WoW closed**, then enable it on the character
+screen (**AddOns**). From your PC you can push one over SSH with the helper — it finds
+the AddOns path automatically, refuses while WoW is running, and backs up any existing
+copy on the Deck:
+
+```sh
+./install-addon.sh deck@<deck-ip> /path/to/MyAddon        # a folder
+./install-addon.sh deck@<deck-ip> /path/to/MyAddon.zip    # or a packaged zip
+```
+
+For example, install Gamepad Grimoire by cloning it and pushing its addon folder.
+
+## 6. (Optional) SSH for remote control
 
 Enabling SSH on the Deck is handy for installing the watchdog, grabbing logs, or
 automating. In Desktop Mode set a password (`passwd`), then
@@ -127,7 +148,8 @@ automating. In Desktop Mode set a password (`passwd`), then
 ## Repo layout
 
 ```
-setup.sh             one-command remote install over SSH (run from your PC)
+setup.sh             one-command remote install of the watchdog, over SSH
+install-addon.sh     push a WoW addon to the Deck over SSH (with backup)
 wow-guard/
   wow-guard.sh       the watchdog
   wow-guard.service  the systemd --user unit
