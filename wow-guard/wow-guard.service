@@ -1,0 +1,10 @@
+[Unit]
+Description=WoW guard: one WoW at a time, restart stale Battle.net
+
+[Service]
+ExecStart=%h/.local/bin/wow-guard.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
