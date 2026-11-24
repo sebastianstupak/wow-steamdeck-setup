@@ -22,7 +22,8 @@ you can wake the Deck and press Play without dropping to the desktop.
 
 1. Add the **Battle.net launcher** as a non-Steam game and run it under **Proton**
    (GE-Proton recommended); install WoW through it.
-2. Install the watchdog: `cd wow-guard && bash install.sh`.
+2. Install the watchdog with one command from your PC: `./setup.sh deck@<deck-ip>`
+   (or on the Deck: `cd wow-guard && bash install.sh`).
 3. Map the **back grips** in Steam Input (below).
 4. In game, use **[Gamepad Grimoire](https://github.com/sebastianstupak/gamepad-grimoire)**
    for a controller cheat sheet and controller-only setup.
@@ -67,16 +68,22 @@ goes outside `~/.local`). It:
   screen) is closed and Battle.net restarted so the next Play works.
 - **Keeps a single WoW** running (closes a duplicate while it's still loading).
 
-Install it — on the Deck, from this folder:
+**Install it in one command from your PC** (after enabling SSH on the Deck — see
+below). This copies the files over and installs + starts the service:
 
 ```sh
-cd wow-guard
-bash install.sh
+./setup.sh deck@<deck-ip>            # uses your default SSH key / agent
+./setup.sh deck@<deck-ip> ~/.ssh/steamdeck
 ```
 
-or push it from another machine over SSH (see the header of `install.sh`). It
-auto-detects the Battle.net appid; set `BNET_APPID=<id>` to override. Logs go to
-`~/.local/state/wow-guard.log`:
+Or, on the Deck itself:
+
+```sh
+cd wow-guard && bash install.sh
+```
+
+Either way it auto-detects the Battle.net appid (set `BNET_APPID=<id>` to override),
+and re-running updates the watchdog in place. Logs go to `~/.local/state/wow-guard.log`:
 
 ```sh
 systemctl --user status wow-guard
@@ -120,10 +127,11 @@ automating. In Desktop Mode set a password (`passwd`), then
 ## Repo layout
 
 ```
+setup.sh             one-command remote install over SSH (run from your PC)
 wow-guard/
   wow-guard.sh       the watchdog
   wow-guard.service  the systemd --user unit
-  install.sh         installs + enables the service
+  install.sh         installs + enables the service (runs on the Deck)
 ```
 
 ## License
