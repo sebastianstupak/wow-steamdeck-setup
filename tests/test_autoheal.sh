@@ -13,4 +13,12 @@ assert_fail spin_sample_stuck 100 0 30       # almost no CPU (idle/settled) -> n
 assert_fail spin_sample_stuck 1499 0 30      # just under the busy threshold -> not stuck
 assert_fail spin_sample_stuck 2000 0 0       # zero window -> not stuck (guard, no div-by-zero)
 assert_fail spin_sample_stuck 2000 -5 30     # negative write delta (log rotated) -> not stuck
+
+# stuck_addons: flags content packs (many files) but not normal addons (few files).
+ad=$(mktemp -d); ADDONS_DIR="$ad"; ADDON_FILE_MAX=5
+mkdir -p "$ad/BigPack/s"; for i in $(seq 1 10); do : > "$ad/BigPack/s/f$i"; done
+mkdir -p "$ad/SmallAddon"; : > "$ad/SmallAddon/a"; : > "$ad/SmallAddon/b"
+out=$(stuck_addons)
+echo "$out" | grep -qx BigPack && echo "  ok: flags BigPack (over file threshold)" || { echo "  FAIL: BigPack not flagged ('$out')"; exit 1; }
+echo "$out" | grep -qx SmallAddon && { echo "  FAIL: SmallAddon wrongly flagged"; exit 1; } || echo "  ok: spares SmallAddon (under threshold)"
 finish

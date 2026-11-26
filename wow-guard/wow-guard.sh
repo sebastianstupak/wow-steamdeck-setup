@@ -77,6 +77,9 @@ WOW_AUTOHEAL="${WOW_AUTOHEAL:-1}"
 STUCK_SECS="${STUCK_SECS:-180}"          # Agent spinning with ZERO disk writes this long = stuck
 RESTORE_DELAY="${RESTORE_DELAY:-120}"    # after a heal, wait this long (update finishing) before restoring
 THRASH_SECS="${THRASH_SECS:-600}"        # heals closer than this = thrash -> stop auto-restoring
+ADDON_FILE_MAX="${ADDON_FILE_MAX:-3000}" # an addon with more files than this is a content pack
+                                         # (the marker-less kind that hangs updates); normal addons
+                                         # have <1k. On-Deck: culprits 12k-20k, biggest legit 945.
 WOW_ROOT="$PFX/Program Files (x86)/World of Warcraft"
 QUARANTINE_DIR="$HOME/wow-backups/wow-guard-quarantine"
 ADDONS_DIR=""   # resolved to the flavor's Interface/AddOns (e.g. _forever_/Interface/AddOns)
@@ -294,14 +297,19 @@ spin_sample_stuck() { # $1 cpu_ticks_delta  $2 write_bytes_delta  $3 window_secs
     [ "${1:-0}" -ge $(( 50 * $3 )) ] 2>/dev/null && [ "${2:-0}" -eq 0 ] 2>/dev/null
 }
 
-# Find AddOns folders the Agent is ENOENT-looping on (the missing-:bnet_tact-marker bug).
-# Echoes offending folder names (>=100 ENOENT hits in the window = a real loop, not noise).
-stuck_addons() { # $1 = agent pid
-    command -v strace >/dev/null 2>&1 || return 0
-    timeout 6 strace -f -p "$1" -e trace=statx 2>/dev/null \
-        | grep -a 'ENOENT' | grep -aoE '/Interface/AddOns/[^/]+' \
-        | sed 's#.*/AddOns/##' | sort | uniq -c | sort -rn \
-        | awk '$1 >= 100 {print $2}' | head -6
+# Identify the addon(s) wedging the update, WITHOUT ptrace (strace can't attach to the Agent
+# unless kernel.yama.ptrace_scope == 0, which it isn't by default). The culprits are marker-less
+# content packs with a huge file count (12k-20k observed) vs <1k for normal addons - a clean,
+# wide gap. Echo every addon folder over ADDON_FILE_MAX files; removing them all at once lets
+# the update finish (removing just one only reveals the next, confirmed on-Deck).
+stuck_addons() { # $1 = agent pid (unused; kept for interface stability)
+    [ -n "$ADDONS_DIR" ] || return 0
+    local d c
+    for d in "$ADDONS_DIR"/*/; do
+        [ -d "$d" ] || continue
+        c=$(find "$d" -type f 2>/dev/null | head -"$((ADDON_FILE_MAX + 1))" | wc -l)
+        [ "$c" -gt "$ADDON_FILE_MAX" ] && basename "$d"
+    done | head -12
 }
 
 # Quarantine the offending addon(s) so the wedged update can finish. Reversible: folders are

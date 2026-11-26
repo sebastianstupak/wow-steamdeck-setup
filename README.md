@@ -110,7 +110,8 @@ holds files it TACT-manages but that lack the `:bnet_tact` marker (community pac
 in, rather than downloaded by Battle.net). The Agent then spins ~100% CPU stat'ing the
 missing marker thousands of times a second, writing nothing. The watchdog detects that
 exact signature (Agent spinning + zero disk writes past `STUCK_SECS`), finds the offending
-addon via `strace`, **moves it to `~/wow-backups/wow-guard-quarantine/`** (reversible — never
+pack by its huge file count (these packs are 12k–20k files; normal addons are under 1k),
+**moves it to `~/wow-backups/wow-guard-quarantine/`** (reversible — never
 deleted) so the update can finish, then **restores it to AddOns** once the update is done and
 Battle.net has closed — so the addon is there for gameplay and only gone during the update.
 If the same content keeps re-hanging updates (thrashing), it's left quarantined and logged.
