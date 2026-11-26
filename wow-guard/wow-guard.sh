@@ -77,6 +77,18 @@ update_active() { # $1 = agent logs dir (searched recursively for Operations-*.l
     case "$last" in *completed*) return 1 ;; *) return 0 ;; esac
 }
 
+# Stalled = an update is active AND the newest Agent log has not been written to for
+# $2 seconds (download frozen). Uses log mtime as the no-progress signal.
+update_stalled() { # $1 = agent logs dir, $2 = stall seconds
+    update_active "$1" || return 1
+    local f mt now
+    f=$(ls -t "$1"/Operations-*.log "$1"/*/Logs/Operations-*.log "$1"/Agent-*.log "$1"/*/Logs/Agent-*.log 2>/dev/null | head -1)
+    [ -n "$f" ] || return 1
+    mt=$(stat -c %Y "$f" 2>/dev/null) || return 1
+    now=$(date +%s)
+    [ $((now - mt)) -ge "$2" ]
+}
+
 # The saved session expired and needs a human: the expired marker appears with no
 # later "Logged into Battle.net successfully." in the newest launcher log.
 login_needed() { # $1 = launcher logs dir
@@ -148,6 +160,25 @@ restart_bnet() {
         sleep 3
     done
     log "Battle.net did not come back - start it from Steam"
+}
+
+# Bounded recovery for a frozen update: tear the stack down and let it resume (Battle.net
+# resumes a partial download on relaunch). Returns after UPDATE_RETRIES attempts.
+recover_stalled_update() {
+    local try
+    for try in $(seq 1 "$UPDATE_RETRIES"); do
+        log "update stalled (try $try/$UPDATE_RETRIES) - restarting Battle.net stack"
+        restart_bnet "stalled update"
+        # give the Agent time to re-queue and start writing again
+        local waited=0
+        while [ "$waited" -lt "$STALL_SECS" ]; do
+            sleep 10; waited=$((waited + 10))
+            update_active "$BNET_AGENT_LOGS" || { log "update finished/cleared after recovery"; return 0; }
+            update_stalled "$BNET_AGENT_LOGS" "$STALL_SECS" || { log "update progressing again"; return 0; }
+        done
+    done
+    log "update still stalled after $UPDATE_RETRIES tries - start it manually from Battle.net"
+    return 1
 }
 
 main() {
