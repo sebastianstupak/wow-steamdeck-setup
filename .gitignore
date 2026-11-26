@@ -4,3 +4,10 @@
 *~
 .idea/
 .vscode/
+
+# python byproducts (tests import idle-watch.py)
+__pycache__/
+*.pyc
+
+# superpowers subagent-driven-development scratch (ledger, briefs, diffs)
+.superpowers/
