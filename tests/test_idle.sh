@@ -12,6 +12,9 @@ echo $(( $(date +%s) - 300 )) > "$sf"
 v=$(idle_seconds "$sf"); [ "$v" -ge 290 ] && [ "$v" -le 310 ] && echo "  ok: old idle=$v" || { echo "  FAIL: old idle=$v"; exit 1; }
 # missing stamp -> large number (unknown == not idle)
 v=$(idle_seconds /nonexistent); [ "$v" -ge 999999 ] && echo "  ok: missing idle=$v" || { echo "  FAIL: missing idle=$v"; exit 1; }
+# malformed stamp (non-numeric garbage) -> large number, not 0 and not a crash
+printf 'not-a-number\n' > "$sf"
+v=$(idle_seconds "$sf"); [ "$v" -ge 999999 ] && echo "  ok: malformed idle=$v" || { echo "  FAIL: malformed idle=$v"; exit 1; }
 
 # should_prewarm: enabled, no WoW, idle past threshold -> yes
 assert_ok   should_prewarm 1 0 200 180
