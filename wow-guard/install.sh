@@ -10,6 +10,9 @@ src=${1:-$(dirname "$0")}
 mkdir -p ~/.local/bin ~/.config/systemd/user
 sed 's/\r$//' "$src/wow-guard.sh" > ~/.local/bin/wow-guard.sh
 chmod +x ~/.local/bin/wow-guard.sh
+sed 's/\r$//' "$src/idle-watch.py" > ~/.local/bin/idle-watch.py
+chmod +x ~/.local/bin/idle-watch.py
+command -v python3 >/dev/null || echo "wow-guard: python3 not found - awake-idle pre-warm will be disabled"
 sed 's/\r$//' "$src/wow-guard.service" > ~/.config/systemd/user/wow-guard.service
 bash -n ~/.local/bin/wow-guard.sh
 systemctl --user daemon-reload

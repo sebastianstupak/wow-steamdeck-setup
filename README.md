@@ -90,7 +90,32 @@ systemctl --user status wow-guard
 tail -f ~/.local/state/wow-guard.log
 ```
 
-## 3. Steam Input — controller and back grips
+## 3. Keeping WoW: Forever updated in the background
+
+`wow-guard` can keep WoW: Forever patched so pressing **Play** isn't a 10-minute
+wait. It does two things, both inside the watchdog (nothing new to run):
+
+- **Never-hang updates.** If a Battle.net download stalls, the watchdog restarts the
+  stuck Agent and retries, instead of sitting there forever.
+- **Background pre-warm.** When the Deck is awake but idle, it launches Battle.net
+  *off-screen* (no window, no controller grab) so pending updates download ahead of
+  time, and gets out of the way the moment you touch the controller.
+
+Honest limit: a suspended Deck downloads nothing, so a brand-new huge patch still
+downloads when you press Play — but it will *finish* fast instead of hanging.
+
+**One-time Battle.net settings** (needed for background updates to work):
+- Settings → Game Install/Update → **Automatic Updates: on**.
+- Settings → App → **Minimize to system tray** on close, **Launch minimized**, and
+  keep **"Keep me logged in"** checked.
+- Settings → Downloads → **Limit download bandwidth: 0** (uncapped).
+
+**Toggle & tuning** (in `wow-guard.service`, default on):
+- `WOW_AUTOUPDATE=0` disables all of the above (watchdog behaves as before).
+- `IDLE_SECS`, `STALL_SECS`, `UPDATE_RETRIES` tune the idle threshold, stall timeout,
+  and retry count.
+
+## 4. Steam Input — controller and back grips
 
 Give the Battle.net shortcut a **Gamepad** controller layout in Steam Input, so WoW
 sees a normal controller (WoW's gamepad support does the rest; the in-game
@@ -111,7 +136,7 @@ them to keyboard keys in Steam Input. A good starting point:
 > them as controller buttons — bind the *keys* you mapped them to, in-game. This is a
 > known limitation; see the Gamepad Grimoire roadmap.
 
-## 4. Controller cheat sheet in game
+## 5. Controller cheat sheet in game
 
 **[Gamepad Grimoire](https://github.com/sebastianstupak/gamepad-grimoire)** draws your
 binds on a picture of *your* controller (front and back), lights up buttons as you
@@ -119,7 +144,7 @@ hold them, and lets you set everything up with the controller alone — no keybo
 chat needed. It replaces the older DeckSetup addon. Install it like any other addon
 (below).
 
-## 5. Installing addons
+## 6. Installing addons
 
 WoW addons live in the AddOns folder inside the Proton prefix:
 
@@ -139,7 +164,7 @@ copy on the Deck:
 
 For example, install Gamepad Grimoire by cloning it and pushing its addon folder.
 
-## 6. (Optional) SSH for remote control
+## 7. (Optional) SSH for remote control
 
 Enabling SSH on the Deck is handy for installing the watchdog, grabbing logs, or
 automating. In Desktop Mode set a password (`passwd`), then

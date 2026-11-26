@@ -24,10 +24,10 @@ echo "==> checking connection to $host"
 ssh "${ssh_opts[@]}" "$host" 'echo "    connected: $(uname -sr)"'
 
 echo "==> copying wow-guard to $host:/tmp"
-scp "${ssh_opts[@]}" "$dir/wow-guard.sh" "$dir/wow-guard.service" "$dir/install.sh" "$host:/tmp/"
+scp "${ssh_opts[@]}" "$dir/wow-guard.sh" "$dir/wow-guard.service" "$dir/install.sh" "$dir/idle-watch.py" "$host:/tmp/"
 
 echo "==> installing and starting the service"
-ssh "${ssh_opts[@]}" "$host" 'bash /tmp/install.sh /tmp && rm -f /tmp/wow-guard.sh /tmp/wow-guard.service /tmp/install.sh'
+ssh "${ssh_opts[@]}" "$host" 'bash /tmp/install.sh /tmp && rm -f /tmp/wow-guard.sh /tmp/wow-guard.service /tmp/install.sh /tmp/idle-watch.py'
 
 echo "==> done. Tail the log with:"
 echo "    ssh ${key:+-i $key }$host 'tail -f ~/.local/state/wow-guard.log'"
