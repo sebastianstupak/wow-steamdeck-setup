@@ -75,6 +75,8 @@ INPUT_STAMP="$HOME/.local/state/wow-guard.input"
 # update can finish, and logs it. Toggle off with WOW_AUTOHEAL=0.
 WOW_AUTOHEAL="${WOW_AUTOHEAL:-1}"
 STUCK_SECS="${STUCK_SECS:-180}"          # Agent spinning with ZERO disk writes this long = stuck
+RESTORE_DELAY="${RESTORE_DELAY:-120}"    # after a heal, wait this long (update finishing) before restoring
+THRASH_SECS="${THRASH_SECS:-600}"        # heals closer than this = thrash -> stop auto-restoring
 WOW_ROOT="$PFX/Program Files (x86)/World of Warcraft"
 QUARANTINE_DIR="$HOME/wow-backups/wow-guard-quarantine"
 ADDONS_DIR=""   # resolved to the flavor's Interface/AddOns (e.g. _forever_/Interface/AddOns)
@@ -318,6 +320,10 @@ heal_stuck_update() { # $1 = agent pid
         mv "$ADDONS_DIR/$a" "$QUARANTINE_DIR/" && { log "auto-heal: quarantined addon '$a' -> $QUARANTINE_DIR"; moved=$((moved + 1)); }
     done
     [ "$moved" -gt 0 ] || { log "auto-heal: offenders found but none moved"; return 1; }
+    local now2; now2=$(date +%s)   # thrash guard: 3rd heal within THRASH_SECS -> stop auto-restoring
+    if [ "$HEAL_LAST" -gt 0 ] && [ $((now2 - HEAL_LAST)) -lt "$THRASH_SECS" ]; then HEAL_STREAK=$((HEAL_STREAK + 1)); else HEAL_STREAK=0; fi
+    HEAL_LAST=$now2
+    [ "$HEAL_STREAK" -ge 2 ] && log "auto-heal: this content keeps re-hanging updates - leaving it in $QUARANTINE_DIR (not auto-restoring); restore it manually once updates settle"
     log "auto-heal: moved $moved addon(s); tearing down the wedged Battle.net"
     kill_bnet_stack; rm -f "$PREWARM_STAMP"; PW_LAST_END=$(date +%s)
     if [ "$was_prewarm" = 1 ]; then
@@ -329,13 +335,32 @@ heal_stuck_update() { # $1 = agent pid
 }
 
 # Per-tick stuck detector state + helpers.
-HEAL_SPIN_SINCE=0; HEAL_CPU_PREV=0; HEAL_WB_PREV=0; HEAL_SAMPLE_PREV=0
+HEAL_SPIN_SINCE=0; HEAL_CPU_PREV=0; HEAL_WB_PREV=0; HEAL_SAMPLE_PREV=0; HEAL_LAST=0; HEAL_STREAK=0
 agent_pid() { pgrep -f 'Agent\.exe' | head -1; }
+
+# Restore quarantined addons to AddOns once the update is done and Battle.net has closed, so the
+# content is back for gameplay - UNLESS it's thrashing (repeatedly re-hanging; then leave it put).
+restore_quarantined() {
+    [ "${WOW_AUTOHEAL:-1}" != "0" ] || return 0
+    [ -n "$ADDONS_DIR" ] && [ -d "$QUARANTINE_DIR" ] || return 0
+    [ -n "$(ls -A "$QUARANTINE_DIR" 2>/dev/null)" ] || return 0   # nothing quarantined
+    [ -n "$(agent_pid)" ] && return 0                              # still updating -> wait
+    bnet_running && return 0
+    [ "$HEAL_LAST" -gt 0 ] && [ $(( $(date +%s) - HEAL_LAST )) -lt "$RESTORE_DELAY" ] && return 0
+    [ "$HEAL_STREAK" -ge 2 ] && return 0                           # thrashing -> leave quarantined
+    local d n=0
+    for d in "$QUARANTINE_DIR"/*; do
+        [ -e "$d" ] || continue
+        mv "$d" "$ADDONS_DIR/" && n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] && log "auto-heal: restored $n addon(s) from quarantine to AddOns (update finished)"
+}
 
 # Each tick: if the Battle.net Agent spins (CPU, zero disk writes) continuously past STUCK_SECS,
 # heal it. A healthy install writes bytes (dw>0); a finished/idle Agent isn't CPU-busy.
 autoheal_tick() {
     [ "${WOW_AUTOHEAL:-1}" != "0" ] || return 0
+    restore_quarantined   # put healed content back once the update is done + Battle.net closed
     local pid; pid=$(agent_pid)
     [ -n "$pid" ] || { HEAL_SPIN_SINCE=0; return 0; }
     local now; now=$(date +%s)

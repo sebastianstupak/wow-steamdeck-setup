@@ -111,7 +111,10 @@ in, rather than downloaded by Battle.net). The Agent then spins ~100% CPU stat'i
 missing marker thousands of times a second, writing nothing. The watchdog detects that
 exact signature (Agent spinning + zero disk writes past `STUCK_SECS`), finds the offending
 addon via `strace`, **moves it to `~/wow-backups/wow-guard-quarantine/`** (reversible — never
-deleted) so the update can finish, and logs it. Disable with `WOW_AUTOHEAL=0`.
+deleted) so the update can finish, then **restores it to AddOns** once the update is done and
+Battle.net has closed — so the addon is there for gameplay and only gone during the update.
+If the same content keeps re-hanging updates (thrashing), it's left quarantined and logged.
+Disable with `WOW_AUTOHEAL=0`.
 
 Honest limit: a suspended Deck downloads nothing, so a brand-new huge patch still
 downloads when you press Play — the pre-warm just keeps that from happening often by

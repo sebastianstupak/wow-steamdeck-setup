@@ -8,7 +8,8 @@ assert_ok declare -F autoupdate_enabled >/dev/null
 for fn in wow_data_bytes login_needed resolve_proton_dir resolve_runtime_entry \
           idle_seconds should_prewarm prewarm_cmd prewarm_launch prewarm_kill \
           manage_prewarm start_idle_watch autoupdate_tick \
-          spin_sample_stuck stuck_addons heal_stuck_update autoheal_tick agent_pid; do
+          spin_sample_stuck stuck_addons heal_stuck_update autoheal_tick agent_pid \
+          restore_quarantined; do
   assert_ok declare -F "$fn" >/dev/null
 done
 
