@@ -35,14 +35,27 @@ def main():
     last = 0.0
     while True:
         r, _, _ = select.select(fds, [], [], 60)
+        active = False
         for fd in r:
             try:
-                while os.read(fd, EVENT_SIZE):
-                    pass  # drain
+                while True:
+                    data = os.read(fd, EVENT_SIZE)
+                    if not data:          # EOF: device disconnected (e.g. a BT controller)
+                        raise OSError("eof")
+                    active = True
+            except BlockingIOError:
+                pass                      # drained all pending events (normal, O_NONBLOCK)
             except OSError:
-                pass
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                fds.remove(fd)            # drop the dead device so select() can't busy-spin on it
+        if not fds:                       # every input device went away -> disable gracefully
+            sys.stderr.write("idle-watch: all input devices closed\n")
+            sys.exit(3)
         now = time.time()
-        if r and now - last >= 1.0:  # debounce to ~1 write/sec
+        if active and now - last >= 1.0:  # debounce to ~1 write/sec
             stamp(); last = now
 
 if __name__ == "__main__":

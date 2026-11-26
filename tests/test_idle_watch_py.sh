@@ -23,6 +23,28 @@ except SystemExit as e:
     assert e.code == 3, "expected exit 3, got %s" % e.code
 else:
     raise AssertionError("main() did not exit when no input devices were readable")
+
+# 3) a device that EOFs (disconnected, e.g. a BT controller) is dropped, not spun on;
+#    if it was the only device, main() exits 3 instead of busy-looping.
+FAKE = 99999
+iw.open_readable = lambda: [FAKE]
+_scount = {"n": 0}
+def _fakeselect(rl, wl, xl, t):
+    _scount["n"] += 1
+    if _scount["n"] > 5:                     # fix works in 1 iteration; >5 == busy-spin regression
+        raise AssertionError("main() kept looping after device EOF (busy-spin regression)")
+    return (list(rl), [], [])
+_realread, _realclose = iw.os.read, iw.os.close
+iw.select.select = _fakeselect
+iw.os.close = lambda fd: None
+iw.os.read = lambda fd, n: b"" if fd == FAKE else _realread(fd, n)  # FAKE EOFs immediately
+try:
+    iw.main()
+except SystemExit as e:
+    assert e.code == 3, "expected exit 3 after the only device EOF'd, got %s" % e.code
+else:
+    raise AssertionError("main() did not exit when its only device disconnected")
+iw.os.read, iw.os.close = _realread, _realclose
 print("PYOK")
 PY
 rc=$?

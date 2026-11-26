@@ -60,14 +60,16 @@ UPDATE_RETRIES="${UPDATE_RETRIES:-3}"
 PREWARM_MAX_SECS="${PREWARM_MAX_SECS:-1800}"
 INPUT_STAMP="$HOME/.local/state/wow-guard.input"
 
-mkdir -p "$(dirname "$LOG")"
-[ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 200000 ] && tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+if [ -z "${SOURCING_FOR_TEST:-}" ]; then   # skip filesystem side effects when sourced for tests
+    mkdir -p "$(dirname "$LOG")"
+    [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 200000 ] && tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 bnet_running() { pgrep -f "$BNET_RE" >/dev/null; }
 
 # An update is "active" when the newest Operations log's last OP_UPDATE line has no
-# matching "completed". (Agent markers confirmed in the on-Deck findings.)
+# matching "completed". (Agent markers are research-derived; confirm on-Deck.)
 update_active() { # $1 = agent logs dir (searched recursively for Operations-*.log)
     local f
     f=$(ls -t "$1"/Operations-*.log "$1"/*/Logs/Operations-*.log 2>/dev/null | head -1)
@@ -193,16 +195,19 @@ prewarm_kill() {
 }
 
 IDLE_PID=""
+IDLE_DISABLED=""   # latched once the reader can't run, so we don't respawn it every second
 
 # Start (and keep alive) the evdev idle reader. Disables the awake-idle layer gracefully
-# if python3 or a readable input device is unavailable (wake handling is unaffected).
+# (latched) if python3 or a readable input device is unavailable (wake handling is unaffected).
 start_idle_watch() {
     autoupdate_enabled || return 0
+    [ -n "$IDLE_DISABLED" ] && return 0
     [ -n "$IDLE_PID" ] && kill -0 "$IDLE_PID" 2>/dev/null && return 0
+    command -v python3 >/dev/null 2>&1 || { IDLE_DISABLED=1; log "idle-watch: python3 not found - awake-idle pre-warm disabled (wake handling unaffected)"; return 0; }
     python3 "$HOME/.local/bin/idle-watch.py" "$INPUT_STAMP" >>"$LOG" 2>&1 &
     IDLE_PID=$!
     sleep 1
-    kill -0 "$IDLE_PID" 2>/dev/null || { IDLE_PID=""; log "idle-watch unavailable - awake-idle pre-warm disabled (wake handling unaffected)"; }
+    kill -0 "$IDLE_PID" 2>/dev/null || { IDLE_PID=""; IDLE_DISABLED=1; log "idle-watch unavailable - awake-idle pre-warm disabled (wake handling unaffected)"; }
 }
 
 # One iteration of the auto-update state machine. Extracted so it is unit-testable with
@@ -300,7 +305,8 @@ main() {
     last=$(date +%s)
 
     cleanup() { prewarm_kill 2>/dev/null; [ -n "$IDLE_PID" ] && kill "$IDLE_PID" 2>/dev/null; }
-    trap cleanup EXIT TERM INT
+    trap cleanup EXIT
+    trap 'cleanup; exit 0' TERM INT   # exit so the loop stops promptly on stop/restart
     start_idle_watch
 
     while sleep 1; do
@@ -322,6 +328,10 @@ main() {
         # background auto-update: runs every second, whether or not WoW is up
         wow_up=0; pgrep -x Wow.exe >/dev/null && wow_up=1
         autoupdate_tick "$wow_up"
+        # autoupdate_tick can block for minutes during a stall recovery; reset the clock
+        # so the next iteration's gap isn't mistaken for a wake-from-sleep (would misfire
+        # a Battle.net restart right after recovery resumed the download).
+        last=$(date +%s)
 
         mapfile -t pids < <(ps -C Wow.exe -o pid= --sort=start_time | tr -d ' ')
         [ ${#pids[@]} -eq 0 ] && { seen=(); continue; }
