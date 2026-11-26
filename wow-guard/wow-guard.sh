@@ -156,6 +156,10 @@ PREWARM_MARK='gamescope --backend headless'          # unique enough to find/kil
 PREWARM_STAMP="$HOME/.local/state/wow-guard.prewarm"  # launch time, for age/cap
 
 # Build the off-screen launch command (printed so it is unit-testable without launching).
+# Only $BNET_EXE is quoted: it alone contains spaces/parens ("Program Files (x86)/...").
+# $STEAM/$SNIPER/$proton are space-free on a Deck (/home/deck/...), so they are left
+# unquoted so the command tokenizes correctly when run via `bash -c "$(prewarm_cmd)"`.
+# Do NOT add quotes around $SNIPER/$proton - that breaks word-splitting of the run verb.
 prewarm_cmd() {
     local proton; proton=$(resolve_proton_dir)
     printf '%s' "gamescope --backend headless -W 1280 -H 720 -- env " \
