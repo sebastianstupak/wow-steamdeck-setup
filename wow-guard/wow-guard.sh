@@ -50,14 +50,20 @@ PREFIX_RE="compatdata/$APPID"
 RESUME_MIN=300
 LOG="$HOME/.local/state/wow-guard.log"
 
-# ---- auto-update config (Task 2) -------------------------------------------
+# ---- auto-update config -----------------------------------------------------
 BNET_LAUNCHER_LOGS="$PFX/users/steamuser/AppData/Local/Battle.net/Logs"
-BNET_AGENT_LOGS="$PFX/ProgramData/Battle.net/Agent"   # confirm exact Logs subdir on-Deck
+# The WoW install Data dir grows while an update downloads. This byte growth is the one
+# reliable progress signal: Battle.net's Agent logs do NOT mark a 'wowf' update complete
+# (only its own 'agent' self-updates log "completed"), and the Operations-log mtime stays
+# frozen for long stretches mid-download - both confirmed on-Deck. So we watch bytes.
+WOWDATA="$PFX/Program Files (x86)/World of Warcraft/Data"
 WOW_AUTOUPDATE="${WOW_AUTOUPDATE:-1}"
-IDLE_SECS="${IDLE_SECS:-180}"
-STALL_SECS="${STALL_SECS:-150}"
-UPDATE_RETRIES="${UPDATE_RETRIES:-3}"
-PREWARM_MAX_SECS="${PREWARM_MAX_SECS:-1800}"
+IDLE_SECS="${IDLE_SECS:-180}"            # awake-idle time before a pre-warm may start
+SAMPLE_SECS="${SAMPLE_SECS:-30}"         # how often to sample the download size
+GROWTH_MIN="${GROWTH_MIN:-1048576}"      # >=1 MiB between samples counts as "downloading"
+QUIET_SECS="${QUIET_SECS:-150}"          # no growth this long after it HAD grown -> finished
+UPTODATE_SECS="${UPTODATE_SECS:-240}"    # no growth at all this long -> nothing to download
+PREWARM_MAX_SECS="${PREWARM_MAX_SECS:-3600}"  # hard cap on a single pre-warm session
 INPUT_STAMP="$HOME/.local/state/wow-guard.input"
 
 if [ -z "${SOURCING_FOR_TEST:-}" ]; then   # skip filesystem side effects when sourced for tests
@@ -68,27 +74,12 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 bnet_running() { pgrep -f "$BNET_RE" >/dev/null; }
 
-# An update is "active" when the newest Operations log's last OP_UPDATE line has no
-# matching "completed". (Agent markers are research-derived; confirm on-Deck.)
-update_active() { # $1 = agent logs dir (searched recursively for Operations-*.log)
-    local f
-    f=$(ls -t "$1"/Operations-*.log "$1"/*/Logs/Operations-*.log 2>/dev/null | head -1)
-    [ -n "$f" ] || return 1
-    local last; last=$(grep -a 'OP_UPDATE for' "$f" | tail -1)
-    [ -n "$last" ] || return 1
-    case "$last" in *completed*) return 1 ;; *) return 0 ;; esac
-}
-
-# Stalled = an update is active AND the newest Agent log has not been written to for
-# $2 seconds (download frozen). Uses log mtime as the no-progress signal.
-update_stalled() { # $1 = agent logs dir, $2 = stall seconds
-    update_active "$1" || return 1
-    local f mt now
-    f=$(ls -t "$1"/Operations-*.log "$1"/*/Logs/Operations-*.log "$1"/Agent-*.log "$1"/*/Logs/Agent-*.log 2>/dev/null | head -1)
-    [ -n "$f" ] || return 1
-    mt=$(stat -c %Y "$f" 2>/dev/null) || return 1
-    now=$(date +%s)
-    [ $((now - mt)) -ge "$2" ]
+# Total bytes of the WoW install Data dir. Grows while an update downloads; this is the
+# activity/progress signal the pre-warm samples. Echoes a number (0 if the dir is missing).
+wow_data_bytes() { # $1 = Data dir (defaults to $WOWDATA)
+    local d="${1:-$WOWDATA}" b
+    b=$(du -sb "$d" 2>/dev/null | cut -f1)
+    case "$b" in ''|*[!0-9]*) echo 0 ;; *) echo "$b" ;; esac
 }
 
 # The saved session expired and needs a human: the expired marker appears with no
@@ -150,24 +141,42 @@ resolve_proton_dir() {
     local name
     name=$(grep -A3 "\"$APPID\"" "$STEAM/config/config.vdf" 2>/dev/null | sed -n 's/.*"name"[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
     [ -n "$name" ] && [ -d "$STEAM/compatibilitytools.d/$name" ] && { echo "$STEAM/compatibilitytools.d/$name"; return; }
-    ls -d "$STEAM/compatibilitytools.d/"*/ 2>/dev/null | head -1 | sed 's#/$##'   # fallback: first GE build
+    ls -d "$STEAM/compatibilitytools.d/"*/ 2>/dev/null | head -1 | sed 's#/$##'   # fallback: first custom build
 }
-SNIPER="${SNIPER:-$STEAM/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point}"
+# Resolve the Steam Linux Runtime the Proton build REQUIRES (toolmanifest require_tool_appid
+# -> that appid's appmanifest installdir). GE-Proton 11+ needs the newer runtime
+# (SteamLinuxRuntime_4, python 3.13); the sniper runtime ships python 3.9 and makes proton
+# fail with "cannot import name 'Self' from typing" - confirmed on-Deck. Hardcoding sniper
+# is wrong; derive it.
+resolve_runtime_entry() {
+    [ -n "$RUNTIME_ENTRY" ] && { echo "$RUNTIME_ENTRY"; return; }
+    local proton appid dir d
+    proton=$(resolve_proton_dir)
+    appid=$(sed -n 's/.*"require_tool_appid"[[:space:]]*"\([0-9]*\)".*/\1/p' "$proton/toolmanifest.vdf" 2>/dev/null | head -1)
+    if [ -n "$appid" ]; then
+        dir=$(sed -n 's/.*"installdir"[[:space:]]*"\([^"]*\)".*/\1/p' "$STEAM/steamapps/appmanifest_$appid.acf" 2>/dev/null | head -1)
+        [ -n "$dir" ] && [ -x "$STEAM/steamapps/common/$dir/_v2-entry-point" ] && { echo "$STEAM/steamapps/common/$dir/_v2-entry-point"; return; }
+    fi
+    for d in SteamLinuxRuntime_4 SteamLinuxRuntime_sniper; do   # fallback: newest runtime present
+        [ -x "$STEAM/steamapps/common/$d/_v2-entry-point" ] && { echo "$STEAM/steamapps/common/$d/_v2-entry-point"; return; }
+    done
+}
 BNET_EXE="${BNET_EXE:-$PFX/Program Files (x86)/Battle.net/Battle.net Launcher.exe}"
 PREWARM_MARK='gamescope --backend headless'          # unique enough to find/kill the pre-warm
 PREWARM_STAMP="$HOME/.local/state/wow-guard.prewarm"  # launch time, for age/cap
+PREWARM_LOG="$HOME/.local/state/wow-guard-prewarm.log"  # proton/gamescope noise (own file)
 
 # Build the off-screen launch command (printed so it is unit-testable without launching).
 # Only $BNET_EXE is quoted: it alone contains spaces/parens ("Program Files (x86)/...").
-# $STEAM/$SNIPER/$proton are space-free on a Deck (/home/deck/...), so they are left
+# $STEAM/$runtime/$proton are space-free on a Deck (/home/deck/...), so they are left
 # unquoted so the command tokenizes correctly when run via `bash -c "$(prewarm_cmd)"`.
-# Do NOT add quotes around $SNIPER/$proton - that breaks word-splitting of the run verb.
+# Do NOT add quotes around $runtime/$proton - that breaks word-splitting of the run verb.
 prewarm_cmd() {
-    local proton; proton=$(resolve_proton_dir)
+    local proton runtime; proton=$(resolve_proton_dir); runtime=$(resolve_runtime_entry)
     printf '%s' "gamescope --backend headless -W 1280 -H 720 -- env " \
         "STEAM_COMPAT_DATA_PATH=$STEAM/steamapps/compatdata/$APPID " \
         "STEAM_COMPAT_CLIENT_INSTALL_PATH=$STEAM " \
-        "$SNIPER --verb=run -- $proton/proton run '$BNET_EXE' --autostarted"
+        "$runtime --verb=run -- $proton/proton run '$BNET_EXE' --autostarted"
 }
 
 # Stateless detection/teardown by process marker (setsid's $! is unreliable; a marker
@@ -176,13 +185,21 @@ prewarm_running() { pgrep -f "$PREWARM_MARK" >/dev/null 2>&1; }
 prewarm_age() { local s; s=$(cat "$PREWARM_STAMP" 2>/dev/null) || { echo 0; return; }
     case "$s" in ''|*[!0-9]*) echo 0; return ;; esac; echo $(( $(date +%s) - s )); }
 
+# Download-sampling state for the running pre-warm (reset at each launch).
+PW_LAST_BYTES=0; PW_LAST_SAMPLE=0; PW_LAST_GROWTH=0; PW_SAW_GROWTH=0
+
 prewarm_launch() {
     prewarm_running && return 0
     login_needed "$BNET_LAUNCHER_LOGS" && { log "pre-warm skipped: Battle.net login expired - sign in once"; return 1; }
     bnet_running && { log "pre-warm skipped: Battle.net already running"; return 1; }
     log "pre-warm: launching Battle.net off-screen to update"
-    nohup bash -c "$(prewarm_cmd)" >>"$LOG" 2>&1 &
-    date +%s > "$PREWARM_STAMP"
+    : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"; export XDG_RUNTIME_DIR   # gamescope needs it
+    # proton/gamescope are noisy (color codes, Xalia tracebacks) -> own file, overwritten
+    # each launch, so the main log stays clean text.
+    nohup bash -c "$(prewarm_cmd)" >"$PREWARM_LOG" 2>&1 &
+    local now; now=$(date +%s)
+    echo "$now" > "$PREWARM_STAMP"
+    PW_LAST_BYTES=$(wow_data_bytes); PW_LAST_SAMPLE=$now; PW_LAST_GROWTH=$now; PW_SAW_GROWTH=0
 }
 
 prewarm_kill() {
@@ -210,35 +227,43 @@ start_idle_watch() {
     kill -0 "$IDLE_PID" 2>/dev/null || { IDLE_PID=""; IDLE_DISABLED=1; log "idle-watch unavailable - awake-idle pre-warm disabled (wake handling unaffected)"; }
 }
 
+# Manage a running pre-warm: stop it the instant the user is back (input), WoW starts, or a
+# hard cap is hit; otherwise sample the download size and stop when it finishes (no growth
+# for QUIET_SECS after it HAD grown) or when there was nothing to download (no growth at all
+# for UPTODATE_SECS). A stalled download is handled implicitly: we close, and the next idle
+# window relaunches a fresh Battle.net that resumes the partial download from disk (the
+# prefix lock means only one program runs in it at a time, so we must yield before Play).
+manage_prewarm() { # $1 = wow_up, $2 = idle_secs
+    local wow_up="$1" idle="$2" now age cur
+    now=$(date +%s); age=$(prewarm_age)
+    if [ "$wow_up" = 1 ] || [ "$idle" -lt "$IDLE_SECS" ] || [ "$age" -ge "$PREWARM_MAX_SECS" ]; then
+        prewarm_kill; return
+    fi
+    [ $((now - PW_LAST_SAMPLE)) -ge "$SAMPLE_SECS" ] || return   # only sample periodically
+    cur=$(wow_data_bytes)
+    if [ "$PW_LAST_BYTES" -gt 0 ] && [ $((cur - PW_LAST_BYTES)) -ge "$GROWTH_MIN" ]; then
+        PW_SAW_GROWTH=1; PW_LAST_GROWTH=$now
+        log "pre-warm: downloading (+$(( (cur - PW_LAST_BYTES) / 1048576 )) MiB)"
+    fi
+    PW_LAST_BYTES=$cur; PW_LAST_SAMPLE=$now
+    if [ "$PW_SAW_GROWTH" = 1 ] && [ $((now - PW_LAST_GROWTH)) -ge "$QUIET_SECS" ]; then
+        log "pre-warm: download idle ${QUIET_SECS}s - finished, closing"; prewarm_kill
+    elif [ "$PW_SAW_GROWTH" = 0 ] && [ "$age" -ge "$UPTODATE_SECS" ]; then
+        log "pre-warm: no download activity - already up to date, closing"; prewarm_kill
+    fi
+}
+
 # One iteration of the auto-update state machine. Extracted so it is unit-testable with
 # stubbed side-effects. $1 = wow_up (1 if WoW is running, else 0).
 autoupdate_tick() {
     autoupdate_enabled || return 0
     local wow_up="$1"
     local idle; idle=$(idle_seconds "$INPUT_STAMP")
-
-    # Layer C: recover a stalled update whenever one is in progress (Play or pre-warm).
-    if [ "$wow_up" = 0 ] && update_stalled "$BNET_AGENT_LOGS" "$STALL_SECS"; then
-        recover_stalled_update
-    fi
-
     start_idle_watch
-
-    # Headless pre-warm: only during a genuine idle window, never with WoW up.
-    if [ -n "$IDLE_PID" ] && should_prewarm 1 "$wow_up" "$idle" "$IDLE_SECS"; then
-        prewarm_running || prewarm_launch
-    fi
-
-    # Yield the prefix the instant the user is back (input) or WoW starts, when the
-    # download is done, or after a hard cap -> so a subsequent Play can resume the
-    # partial download (prefix lock allows only one program at a time).
     if prewarm_running; then
-        if [ "$wow_up" = 1 ] || [ "$idle" -lt "$IDLE_SECS" ] || [ "$(prewarm_age)" -ge "$PREWARM_MAX_SECS" ]; then
-            prewarm_kill
-        elif ! update_active "$BNET_AGENT_LOGS" && [ "$(prewarm_age)" -ge 120 ]; then
-            log "pre-warm: nothing left to download (up to date) - closing"
-            prewarm_kill
-        fi
+        manage_prewarm "$wow_up" "$idle"
+    elif [ -n "$IDLE_PID" ] && should_prewarm 1 "$wow_up" "$idle" "$IDLE_SECS"; then
+        prewarm_launch
     fi
 }
 
@@ -261,25 +286,6 @@ restart_bnet() {
         sleep 3
     done
     log "Battle.net did not come back - start it from Steam"
-}
-
-# Bounded recovery for a frozen update: tear the stack down and let it resume (Battle.net
-# resumes a partial download on relaunch). Returns after UPDATE_RETRIES attempts.
-recover_stalled_update() {
-    local try
-    for try in $(seq 1 "$UPDATE_RETRIES"); do
-        log "update stalled (try $try/$UPDATE_RETRIES) - restarting Battle.net stack"
-        restart_bnet "stalled update"
-        # give the Agent time to re-queue and start writing again
-        local waited=0
-        while [ "$waited" -lt "$STALL_SECS" ]; do
-            sleep 10; waited=$((waited + 10))
-            update_active "$BNET_AGENT_LOGS" || { log "update finished/cleared after recovery"; return 0; }
-            update_stalled "$BNET_AGENT_LOGS" "$STALL_SECS" || { log "update progressing again"; return 0; }
-        done
-    done
-    log "update still stalled after $UPDATE_RETRIES tries - start it manually from Battle.net"
-    return 1
 }
 
 # Seconds since the last input event, from the stamp idle-watch.py maintains.
@@ -328,9 +334,8 @@ main() {
         # background auto-update: runs every second, whether or not WoW is up
         wow_up=0; pgrep -x Wow.exe >/dev/null && wow_up=1
         autoupdate_tick "$wow_up"
-        # autoupdate_tick can block for minutes during a stall recovery; reset the clock
-        # so the next iteration's gap isn't mistaken for a wake-from-sleep (would misfire
-        # a Battle.net restart right after recovery resumed the download).
+        # autoupdate_tick can take a few seconds (du sampling, prewarm teardown); reset the
+        # clock so that latency isn't mistaken for a wake-from-sleep on the next iteration.
         last=$(date +%s)
 
         mapfile -t pids < <(ps -C Wow.exe -o pid= --sort=start_time | tr -d ' ')

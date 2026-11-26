@@ -93,16 +93,21 @@ tail -f ~/.local/state/wow-guard.log
 ## 3. Keeping WoW: Forever updated in the background
 
 `wow-guard` can keep WoW: Forever patched so pressing **Play** isn't a 10-minute
-wait. It does two things, both inside the watchdog (nothing new to run):
+wait. When the Deck is awake but **idle**, the watchdog launches Battle.net
+*off-screen* — a nested headless `gamescope` running the game's own Proton, started
+outside Steam so it takes **no screen and no controller** — lets its pending update
+download, and closes it the instant you touch the controller or start WoW (so the
+prefix is free for Play, which resumes right where the download left off). It watches
+the install's **download size** to know when it's downloading vs. finished (Battle.net
+doesn't log WoW update completion, so bytes are the signal). Nothing new to run — it's
+all inside the watchdog.
 
-- **Never-hang updates.** If a Battle.net download stalls, the watchdog restarts the
-  stuck Agent and retries, instead of sitting there forever.
-- **Background pre-warm.** When the Deck is awake but idle, it launches Battle.net
-  *off-screen* (no window, no controller grab) so pending updates download ahead of
-  time, and gets out of the way the moment you touch the controller.
+A stalled download heals itself: the pre-warm closes, and the next idle window starts
+a fresh Battle.net that resumes the partial download — so it never hangs "forever."
 
 Honest limit: a suspended Deck downloads nothing, so a brand-new huge patch still
-downloads when you press Play — but it will *finish* fast instead of hanging.
+downloads when you press Play — the pre-warm just keeps that from happening often by
+staying current whenever the Deck is awake and idle.
 
 **One-time Battle.net settings** (needed for background updates to work):
 - Settings → Game Install/Update → **Automatic Updates: on**.
@@ -112,8 +117,10 @@ downloads when you press Play — but it will *finish* fast instead of hanging.
 
 **Toggle & tuning** (in `wow-guard.service`, default on):
 - `WOW_AUTOUPDATE=0` disables all of the above (watchdog behaves as before).
-- `IDLE_SECS`, `STALL_SECS`, `UPDATE_RETRIES` tune the idle threshold, stall timeout,
-  and retry count.
+- `IDLE_SECS` (idle time before a pre-warm starts), `SAMPLE_SECS`/`QUIET_SECS` (how it
+  decides a download is done), and `PREWARM_MAX_SECS` (hard cap per session) tune it.
+- The pre-warm's own (noisy) output goes to `~/.local/state/wow-guard-prewarm.log`;
+  the watchdog's log stays at `~/.local/state/wow-guard.log`.
 
 ## 4. Steam Input — controller and back grips
 

@@ -1,21 +1,16 @@
 #!/bin/bash
+# login_needed: the saved Battle.net session expired and needs a human sign-in.
 cd "$(dirname "$0")" || exit 2
 . ./assert.sh
 SOURCING_FOR_TEST=1 . ../wow-guard/wow-guard.sh
 
-# update_active: file whose last OP_UPDATE has no "completed" -> active
-ad=$(mktemp -d)
-cp fixtures/agent/Operations-active.log "$ad/Operations-1.log"
-assert_ok update_active "$ad"
-cp fixtures/agent/Operations-done.log "$ad/Operations-2.log"   # newer, completed
-touch -d "+1 sec" "$ad/Operations-2.log" 2>/dev/null || sleep 1
-assert_fail update_active "$ad"
-assert_fail update_active /nonexistent
-
-# login_needed: expired with NO later success -> needs login; expired THEN success -> fine
 ld=$(mktemp -d)
+# expired marker with NO later success -> needs login
 cp fixtures/launcher/battle.net-expired.log "$ld/battle.net-1.log"
 assert_ok login_needed "$ld"
+# expired THEN a later success -> fine (self-recovered)
 cp fixtures/launcher/battle.net-ok.log "$ld/battle.net-1.log"
 assert_fail login_needed "$ld"
+# no launcher log at all -> not "needs login"
+assert_fail login_needed /nonexistent
 finish
