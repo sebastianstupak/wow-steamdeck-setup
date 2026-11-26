@@ -181,6 +181,22 @@ recover_stalled_update() {
     return 1
 }
 
+# Seconds since the last input event, from the stamp idle-watch.py maintains.
+# Unknown/missing stamp -> a large number (so "idle" is never falsely assumed).
+idle_seconds() { # $1 = stamp file
+    local s now
+    s=$(cat "$1" 2>/dev/null) || { echo 1000000; return; }
+    case "$s" in ''|*[!0-9]*) echo 1000000; return ;; esac
+    now=$(date +%s); echo $(( now - s ))
+}
+
+# Should a background pre-warm start now?
+should_prewarm() { # $1 enabled(1/0) $2 wow_running(1/0) $3 idle_secs $4 idle_threshold
+    [ "$1" = "1" ] || return 1
+    [ "$2" = "0" ] || return 1
+    [ "$3" -ge "$4" ] 2>/dev/null
+}
+
 main() {
     declare -A seen
     for p in $(pgrep -x Wow.exe); do seen[$p]=1; done   # leave already-running WoW alone
