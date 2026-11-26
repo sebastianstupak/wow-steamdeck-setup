@@ -141,6 +141,53 @@ kill_bnet_stack() {
     done
 }
 
+STEAM="$HOME/.local/share/Steam"
+# Resolve the shortcut's Proton build name from CompatToolMapping, then its proton script.
+resolve_proton_dir() {
+    [ -n "$PROTON_DIR" ] && { echo "$PROTON_DIR"; return; }
+    local name
+    name=$(grep -A3 "\"$APPID\"" "$STEAM/config/config.vdf" 2>/dev/null | sed -n 's/.*"name"[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$name" ] && [ -d "$STEAM/compatibilitytools.d/$name" ] && { echo "$STEAM/compatibilitytools.d/$name"; return; }
+    ls -d "$STEAM/compatibilitytools.d/"*/ 2>/dev/null | head -1 | sed 's#/$##'   # fallback: first GE build
+}
+SNIPER="${SNIPER:-$STEAM/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point}"
+BNET_EXE="${BNET_EXE:-$PFX/Program Files (x86)/Battle.net/Battle.net Launcher.exe}"
+PREWARM_MARK='gamescope --backend headless'          # unique enough to find/kill the pre-warm
+PREWARM_STAMP="$HOME/.local/state/wow-guard.prewarm"  # launch time, for age/cap
+
+# Build the off-screen launch command (printed so it is unit-testable without launching).
+prewarm_cmd() {
+    local proton; proton=$(resolve_proton_dir)
+    printf '%s' "gamescope --backend headless -W 1280 -H 720 -- env " \
+        "STEAM_COMPAT_DATA_PATH=$STEAM/steamapps/compatdata/$APPID " \
+        "STEAM_COMPAT_CLIENT_INSTALL_PATH=$STEAM " \
+        "$SNIPER --verb=run -- $proton/proton run '$BNET_EXE' --autostarted"
+}
+
+# Stateless detection/teardown by process marker (setsid's $! is unreliable; a marker
+# also survives a watchdog restart). Teardown reuses the existing kill_bnet_stack.
+prewarm_running() { pgrep -f "$PREWARM_MARK" >/dev/null 2>&1; }
+prewarm_age() { local s; s=$(cat "$PREWARM_STAMP" 2>/dev/null) || { echo 0; return; }
+    case "$s" in ''|*[!0-9]*) echo 0; return ;; esac; echo $(( $(date +%s) - s )); }
+
+prewarm_launch() {
+    prewarm_running && return 0
+    login_needed "$BNET_LAUNCHER_LOGS" && { log "pre-warm skipped: Battle.net login expired - sign in once"; return 1; }
+    bnet_running && { log "pre-warm skipped: Battle.net already running"; return 1; }
+    log "pre-warm: launching Battle.net off-screen to update"
+    nohup bash -c "$(prewarm_cmd)" >>"$LOG" 2>&1 &
+    date +%s > "$PREWARM_STAMP"
+}
+
+prewarm_kill() {
+    prewarm_running || { rm -f "$PREWARM_STAMP"; return 0; }
+    log "pre-warm: tearing down off-screen Battle.net (releasing prefix)"
+    pkill -TERM -f "$PREWARM_MARK" 2>/dev/null
+    sleep 2
+    kill_bnet_stack
+    rm -f "$PREWARM_STAMP"
+}
+
 restart_bnet() {
     log "restarting Battle.net ($1)"
     pkill -f "$BNET_RE"
