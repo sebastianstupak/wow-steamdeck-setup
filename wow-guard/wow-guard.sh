@@ -24,14 +24,24 @@ find_appid() {
     done
     return 1
 }
-APPID=$(find_appid) || {
-    echo "wow-guard: no Battle.net Proton prefix found; add Battle.net as a non-Steam game first" >&2
-    exit 1
-}
-# printf %u prints the unsigned value; the id is > 2^63 so plain $(()) would wrap negative
-GAME_ID=$(printf '%u' "$(((APPID << 32) | 0x02000000))")
-APPID_URL="steam://rungameid/$GAME_ID"
-PFX="$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx/drive_c"
+if [ -n "${SOURCING_FOR_TEST:-}" ]; then
+    # Sourced on a dev machine for unit tests: no Steam Deck prefix exists, so
+    # skip the resolve-or-exit below and the dependent path/GAME_ID setup, and
+    # use harmless placeholders instead.
+    APPID=TEST
+    PFX=/tmp/none
+    GAME_ID=0
+    APPID_URL="steam://rungameid/0"
+else
+    APPID=$(find_appid) || {
+        echo "wow-guard: no Battle.net Proton prefix found; add Battle.net as a non-Steam game first" >&2
+        exit 1
+    }
+    # printf %u prints the unsigned value; the id is > 2^63 so plain $(()) would wrap negative
+    GAME_ID=$(printf '%u' "$(((APPID << 32) | 0x02000000))")
+    APPID_URL="steam://rungameid/$GAME_ID"
+    PFX="$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx/drive_c"
+fi
 BNET_LOGS="$PFX/users/steamuser/AppData/Local/Battle.net/Logs"
 # Anchored so it only matches the real Battle.net process, never a shell whose
 # command line merely mentions it.
@@ -40,11 +50,24 @@ PREFIX_RE="compatdata/$APPID"
 RESUME_MIN=300
 LOG="$HOME/.local/state/wow-guard.log"
 
+# ---- auto-update config (Task 2) -------------------------------------------
+BNET_LAUNCHER_LOGS="$PFX/users/steamuser/AppData/Local/Battle.net/Logs"
+BNET_AGENT_LOGS="$PFX/ProgramData/Battle.net/Agent"   # confirm exact Logs subdir on-Deck
+WOW_AUTOUPDATE="${WOW_AUTOUPDATE:-1}"
+IDLE_SECS="${IDLE_SECS:-180}"
+STALL_SECS="${STALL_SECS:-150}"
+UPDATE_RETRIES="${UPDATE_RETRIES:-3}"
+PREWARM_MAX_SECS="${PREWARM_MAX_SECS:-1800}"
+INPUT_STAMP="$HOME/.local/state/wow-guard.input"
+
 mkdir -p "$(dirname "$LOG")"
 [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 200000 ] && tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 bnet_running() { pgrep -f "$BNET_RE" >/dev/null; }
+
+# Is background auto-update enabled? (default on; WOW_AUTOUPDATE=0 disables all new behavior)
+autoupdate_enabled() { [ "${WOW_AUTOUPDATE:-1}" != "0" ]; }
 
 # Did Battle.net fail to get a login token in the last 3 minutes? (log times are UTC)
 token_error_recent() {
@@ -104,49 +127,56 @@ restart_bnet() {
     log "Battle.net did not come back - start it from Steam"
 }
 
-declare -A seen
-for p in $(pgrep -x Wow.exe); do seen[$p]=1; done   # leave already-running WoW alone
-log "started (appid $APPID; existing WoW: ${!seen[*]})"
-last=$(date +%s)
+main() {
+    declare -A seen
+    for p in $(pgrep -x Wow.exe); do seen[$p]=1; done   # leave already-running WoW alone
+    log "started (appid $APPID; existing WoW: ${!seen[*]})"
+    last=$(date +%s)
 
-while sleep 1; do
-    now=$(date +%s)
-    gap=$((now - last)); last=$now
+    while sleep 1; do
+        now=$(date +%s)
+        gap=$((now - last)); last=$now
 
-    # 2. woke up from a long sleep
-    if [ $gap -gt $RESUME_MIN ]; then
-        log "Deck woke up after $((gap / 60)) min"
-        if ! pgrep -x Wow.exe >/dev/null && bnet_running; then
-            wait_network || log "network slow to return after wake"
-            pgrep -x Wow.exe >/dev/null || restart_bnet "after sleep"
+        # 2. woke up from a long sleep
+        if [ $gap -gt $RESUME_MIN ]; then
+            log "Deck woke up after $((gap / 60)) min"
+            if ! pgrep -x Wow.exe >/dev/null && bnet_running; then
+                wait_network || log "network slow to return after wake"
+                pgrep -x Wow.exe >/dev/null || restart_bnet "after sleep"
+            fi
+            last=$(date +%s)
+            continue
         fi
-        last=$(date +%s)
-        continue
-    fi
 
-    mapfile -t pids < <(ps -C Wow.exe -o pid= --sort=start_time | tr -d ' ')
-    [ ${#pids[@]} -eq 0 ] && { seen=(); continue; }
+        mapfile -t pids < <(ps -C Wow.exe -o pid= --sort=start_time | tr -d ' ')
+        [ ${#pids[@]} -eq 0 ] && { seen=(); continue; }
 
-    # 1. more than one WoW: keep the oldest
-    if [ ${#pids[@]} -gt 1 ]; then
-        for p in "${pids[@]:1}"; do
-            kill "$p" 2>/dev/null && log "closed second WoW (pid $p); keeping ${pids[0]}"
+        # 1. more than one WoW: keep the oldest
+        if [ ${#pids[@]} -gt 1 ]; then
+            for p in "${pids[@]:1}"; do
+                kill "$p" 2>/dev/null && log "closed second WoW (pid $p); keeping ${pids[0]}"
+                seen[$p]=1
+            done
+        fi
+
+        # 3. new WoW without the Battle.net login hand-off
+        p=${pids[0]}
+        if [ -z "${seen[$p]}" ]; then
             seen[$p]=1
-        done
-    fi
-
-    # 3. new WoW without the Battle.net login hand-off
-    p=${pids[0]}
-    if [ -z "${seen[$p]}" ]; then
-        seen[$p]=1
-        if tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -q -- '-launcherlogin'; then
-            log "WoW pid $p started with Battle.net login"
-        elif token_error_recent; then
-            kill "$p" 2>/dev/null
-            log "closed WoW pid $p: Battle.net could not get a login token"
-            restart_bnet "stale login"
-        else
-            log "WoW pid $p started without -launcherlogin, but no token error logged - left alone"
+            if tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -q -- '-launcherlogin'; then
+                log "WoW pid $p started with Battle.net login"
+            elif token_error_recent; then
+                kill "$p" 2>/dev/null
+                log "closed WoW pid $p: Battle.net could not get a login token"
+                restart_bnet "stale login"
+            else
+                log "WoW pid $p started without -launcherlogin, but no token error logged - left alone"
+            fi
         fi
-    fi
-done
+    done
+}
+
+# Run the loop only when executed directly, never when sourced for tests.
+if [ -z "${SOURCING_FOR_TEST:-}" ] && [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi
