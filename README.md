@@ -177,6 +177,7 @@ setup.sh             one-command remote install of the watchdog, over SSH
 install-addon.sh     push a WoW addon to the Deck over SSH (with backup)
 wow-guard/
   wow-guard.sh       the watchdog
+  idle-watch.py      awake-idle reader for the background pre-warm
   wow-guard.service  the systemd --user unit
   install.sh         installs + enables the service (runs on the Deck)
 ```

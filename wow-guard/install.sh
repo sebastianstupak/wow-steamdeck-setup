@@ -3,7 +3,7 @@
 # survives SteamOS updates. Run on the Deck from this folder:
 #   bash install.sh
 # or push it from another machine over SSH:
-#   scp wow-guard.sh wow-guard.service install.sh deck@<deck-ip>:/tmp/ && \
+#   scp wow-guard.sh wow-guard.service idle-watch.py install.sh deck@<deck-ip>:/tmp/ && \
 #   ssh deck@<deck-ip> 'bash /tmp/install.sh /tmp'
 set -e
 src=${1:-$(dirname "$0")}
