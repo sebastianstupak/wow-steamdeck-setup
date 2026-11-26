@@ -117,8 +117,10 @@ staying current whenever the Deck is awake and idle.
 
 **Toggle & tuning** (in `wow-guard.service`, default on):
 - `WOW_AUTOUPDATE=0` disables all of the above (watchdog behaves as before).
-- `IDLE_SECS` (idle time before a pre-warm starts), `SAMPLE_SECS`/`QUIET_SECS` (how it
-  decides a download is done), and `PREWARM_MAX_SECS` (hard cap per session) tune it.
+- `IDLE_SECS` (idle time before a pre-warm starts), `QUIET_SECS` (how long with no
+  download growth means "done"), `PREWARM_MAX_SECS` (hard cap per session), and
+  `COOLDOWN_SECS` (gap between checks, default 30 min, so an up-to-date game doesn't
+  relaunch repeatedly while idle) tune it.
 - The pre-warm's own (noisy) output goes to `~/.local/state/wow-guard-prewarm.log`;
   the watchdog's log stays at `~/.local/state/wow-guard.log`.
 

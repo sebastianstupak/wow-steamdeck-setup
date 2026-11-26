@@ -17,7 +17,7 @@ wow_data_bytes()  { echo "$BYTES"; }
 IDLE_PID=fake
 INPUT_STAMP=$(mktemp)
 WOW_AUTOUPDATE=1; IDLE_SECS=180; SAMPLE_SECS=30; GROWTH_MIN=1048576
-QUIET_SECS=150; UPTODATE_SECS=240; PREWARM_MAX_SECS=3600
+QUIET_SECS=150; UPTODATE_SECS=240; PREWARM_MAX_SECS=3600; COOLDOWN_SECS=1800; PW_LAST_END=0
 setidle() { echo $(( $(date +%s) - $1 )) > "$INPUT_STAMP"; }   # idle seconds == $1
 
 # ---- autoupdate_tick dispatch ----
@@ -30,6 +30,10 @@ assert_eq " launch" "$ACTIONS" "idle + not running -> launch"
 
 setidle 5; PR=1; ACTIONS=""; autoupdate_tick 0                            # not idle
 assert_eq "" "$ACTIONS" "not idle enough -> no launch"
+
+setidle 300; PR=1; PW_LAST_END=$(date +%s); ACTIONS=""; autoupdate_tick 0  # within cooldown
+assert_eq "" "$ACTIONS" "within cooldown -> no relaunch (don't churn when up to date)"
+PW_LAST_END=0
 
 setidle 300; PR=0; AGE=10; BYTES=100; PW_LAST_SAMPLE=$(date +%s); PW_SAW_GROWTH=0; PW_LAST_BYTES=100
 ACTIONS=""; autoupdate_tick 0                                             # running -> manage_prewarm

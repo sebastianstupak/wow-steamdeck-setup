@@ -64,6 +64,7 @@ GROWTH_MIN="${GROWTH_MIN:-1048576}"      # >=1 MiB between samples counts as "do
 QUIET_SECS="${QUIET_SECS:-150}"          # no growth this long after it HAD grown -> finished
 UPTODATE_SECS="${UPTODATE_SECS:-240}"    # no growth at all this long -> nothing to download
 PREWARM_MAX_SECS="${PREWARM_MAX_SECS:-3600}"  # hard cap on a single pre-warm session
+COOLDOWN_SECS="${COOLDOWN_SECS:-1800}"   # min gap between pre-warm sessions (don't churn when up to date)
 INPUT_STAMP="$HOME/.local/state/wow-guard.input"
 
 if [ -z "${SOURCING_FOR_TEST:-}" ]; then   # skip filesystem side effects when sourced for tests
@@ -185,8 +186,9 @@ prewarm_running() { pgrep -f "$PREWARM_MARK" >/dev/null 2>&1; }
 prewarm_age() { local s; s=$(cat "$PREWARM_STAMP" 2>/dev/null) || { echo 0; return; }
     case "$s" in ''|*[!0-9]*) echo 0; return ;; esac; echo $(( $(date +%s) - s )); }
 
-# Download-sampling state for the running pre-warm (reset at each launch).
-PW_LAST_BYTES=0; PW_LAST_SAMPLE=0; PW_LAST_GROWTH=0; PW_SAW_GROWTH=0
+# Download-sampling state for the running pre-warm (reset at each launch); PW_LAST_END is
+# when the last pre-warm closed, for the cooldown so an up-to-date game doesn't churn.
+PW_LAST_BYTES=0; PW_LAST_SAMPLE=0; PW_LAST_GROWTH=0; PW_SAW_GROWTH=0; PW_LAST_END=0
 
 prewarm_launch() {
     prewarm_running && return 0
@@ -209,6 +211,7 @@ prewarm_kill() {
     sleep 2
     kill_bnet_stack
     rm -f "$PREWARM_STAMP"
+    PW_LAST_END=$(date +%s)   # start the cooldown before the next pre-warm
 }
 
 IDLE_PID=""
@@ -262,7 +265,8 @@ autoupdate_tick() {
     start_idle_watch
     if prewarm_running; then
         manage_prewarm "$wow_up" "$idle"
-    elif [ -n "$IDLE_PID" ] && should_prewarm 1 "$wow_up" "$idle" "$IDLE_SECS"; then
+    elif [ -n "$IDLE_PID" ] && should_prewarm 1 "$wow_up" "$idle" "$IDLE_SECS" \
+         && [ $(( $(date +%s) - PW_LAST_END )) -ge "$COOLDOWN_SECS" ]; then
         prewarm_launch
     fi
 }
