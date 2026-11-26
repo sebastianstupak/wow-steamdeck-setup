@@ -67,6 +67,19 @@ PREWARM_MAX_SECS="${PREWARM_MAX_SECS:-3600}"  # hard cap on a single pre-warm se
 COOLDOWN_SECS="${COOLDOWN_SECS:-1800}"   # min gap between pre-warm sessions (don't churn when up to date)
 INPUT_STAMP="$HOME/.local/state/wow-guard.input"
 
+# ---- stuck-update auto-heal -------------------------------------------------
+# Battle.net updates wedge forever when AddOns contain files it TACT-manages but that lack
+# the ':bnet_tact' marker (e.g. community packs copied in, not downloaded) - the Agent spins
+# ~100% CPU stat'ing the missing marker thousands of times/sec, no disk writes, stuck at 97%.
+# Confirmed on-Deck. Auto-heal detects that signature, quarantines the offending addon so the
+# update can finish, and logs it. Toggle off with WOW_AUTOHEAL=0.
+WOW_AUTOHEAL="${WOW_AUTOHEAL:-1}"
+STUCK_SECS="${STUCK_SECS:-180}"          # Agent spinning with ZERO disk writes this long = stuck
+WOW_ROOT="$PFX/Program Files (x86)/World of Warcraft"
+QUARANTINE_DIR="$HOME/wow-backups/wow-guard-quarantine"
+ADDONS_DIR=""   # resolved to the flavor's Interface/AddOns (e.g. _forever_/Interface/AddOns)
+for _f in "$WOW_ROOT"/*/Interface/AddOns; do [ -d "$_f" ] && { ADDONS_DIR="$_f"; break; }; done
+
 if [ -z "${SOURCING_FOR_TEST:-}" ]; then   # skip filesystem side effects when sourced for tests
     mkdir -p "$(dirname "$LOG")"
     [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 200000 ] && tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
@@ -271,6 +284,76 @@ autoupdate_tick() {
     fi
 }
 
+# ---- stuck-update auto-heal -------------------------------------------------
+# A sample looks like a stuck spin: the Agent burned >50% of a core over the window AND wrote
+# zero bytes to disk (install frozen). Pure function so the threshold is unit-testable.
+spin_sample_stuck() { # $1 cpu_ticks_delta  $2 write_bytes_delta  $3 window_secs
+    [ "${3:-0}" -gt 0 ] 2>/dev/null || return 1
+    [ "${1:-0}" -ge $(( 50 * $3 )) ] 2>/dev/null && [ "${2:-0}" -eq 0 ] 2>/dev/null
+}
+
+# Find AddOns folders the Agent is ENOENT-looping on (the missing-:bnet_tact-marker bug).
+# Echoes offending folder names (>=100 ENOENT hits in the window = a real loop, not noise).
+stuck_addons() { # $1 = agent pid
+    command -v strace >/dev/null 2>&1 || return 0
+    timeout 6 strace -f -p "$1" -e trace=statx 2>/dev/null \
+        | grep -a 'ENOENT' | grep -aoE '/Interface/AddOns/[^/]+' \
+        | sed 's#.*/AddOns/##' | sort | uniq -c | sort -rn \
+        | awk '$1 >= 100 {print $2}' | head -6
+}
+
+# Quarantine the offending addon(s) so the wedged update can finish. Reversible: folders are
+# MOVED to QUARANTINE_DIR, never deleted. If this was a background pre-warm, relaunch it to
+# finish hands-off; otherwise the user's next Play completes the now-unblocked update.
+heal_stuck_update() { # $1 = agent pid
+    local was_prewarm=0; prewarm_running && was_prewarm=1
+    log "auto-heal: update looks stuck (Agent spinning ${STUCK_SECS}s, no disk writes) - diagnosing"
+    local offenders; offenders=$(stuck_addons "$1")
+    [ -n "$offenders" ] || { log "auto-heal: no AddOns ENOENT loop found - not the marker bug; leaving it alone"; return 1; }
+    [ -n "$ADDONS_DIR" ] || { log "auto-heal: AddOns dir not resolved - cannot quarantine"; return 1; }
+    mkdir -p "$QUARANTINE_DIR"
+    local a moved=0
+    for a in $offenders; do
+        [ -d "$ADDONS_DIR/$a" ] || continue
+        mv "$ADDONS_DIR/$a" "$QUARANTINE_DIR/" && { log "auto-heal: quarantined addon '$a' -> $QUARANTINE_DIR"; moved=$((moved + 1)); }
+    done
+    [ "$moved" -gt 0 ] || { log "auto-heal: offenders found but none moved"; return 1; }
+    log "auto-heal: moved $moved addon(s); tearing down the wedged Battle.net"
+    kill_bnet_stack; rm -f "$PREWARM_STAMP"; PW_LAST_END=$(date +%s)
+    if [ "$was_prewarm" = 1 ]; then
+        log "auto-heal: relaunching pre-warm to finish the now-unblocked update"; prewarm_launch
+    else
+        log "auto-heal: done - relaunch Battle.net / press Play to finish the update"
+    fi
+    return 0
+}
+
+# Per-tick stuck detector state + helpers.
+HEAL_SPIN_SINCE=0; HEAL_CPU_PREV=0; HEAL_WB_PREV=0; HEAL_SAMPLE_PREV=0
+agent_pid() { pgrep -f 'Agent\.exe' | head -1; }
+
+# Each tick: if the Battle.net Agent spins (CPU, zero disk writes) continuously past STUCK_SECS,
+# heal it. A healthy install writes bytes (dw>0); a finished/idle Agent isn't CPU-busy.
+autoheal_tick() {
+    [ "${WOW_AUTOHEAL:-1}" != "0" ] || return 0
+    local pid; pid=$(agent_pid)
+    [ -n "$pid" ] || { HEAL_SPIN_SINCE=0; return 0; }
+    local now; now=$(date +%s)
+    [ $((now - HEAL_SAMPLE_PREV)) -ge "$SAMPLE_SECS" ] || return 0
+    local cpu wb win dc dw
+    cpu=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null); cpu=${cpu:-0}
+    wb=$(awk -F': ' '/^write_bytes:/{print $2; exit}' "/proc/$pid/io" 2>/dev/null); wb=${wb:-0}
+    if [ "$HEAL_SAMPLE_PREV" -eq 0 ]; then HEAL_CPU_PREV=$cpu; HEAL_WB_PREV=$wb; HEAL_SAMPLE_PREV=$now; return 0; fi
+    win=$((now - HEAL_SAMPLE_PREV)); dc=$((cpu - HEAL_CPU_PREV)); dw=$((wb - HEAL_WB_PREV))
+    HEAL_CPU_PREV=$cpu; HEAL_WB_PREV=$wb; HEAL_SAMPLE_PREV=$now
+    if spin_sample_stuck "$dc" "$dw" "$win"; then
+        [ "$HEAL_SPIN_SINCE" -eq 0 ] && HEAL_SPIN_SINCE=$now
+        [ $((now - HEAL_SPIN_SINCE)) -ge "$STUCK_SECS" ] && { heal_stuck_update "$pid"; HEAL_SPIN_SINCE=0; }
+    else
+        HEAL_SPIN_SINCE=0
+    fi
+}
+
 restart_bnet() {
     log "restarting Battle.net ($1)"
     pkill -f "$BNET_RE"
@@ -338,6 +421,7 @@ main() {
         # background auto-update: runs every second, whether or not WoW is up
         wow_up=0; pgrep -x Wow.exe >/dev/null && wow_up=1
         autoupdate_tick "$wow_up"
+        autoheal_tick   # detect+fix an update wedged on a marker-less addon (any Battle.net)
         # autoupdate_tick can take a few seconds (du sampling, prewarm teardown); reset the
         # clock so that latency isn't mistaken for a wake-from-sleep on the next iteration.
         last=$(date +%s)

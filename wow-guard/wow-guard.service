@@ -5,6 +5,7 @@ Description=WoW guard: one WoW at a time, restart stale Battle.net
 # Background auto-update of WoW: Forever. Set to 0 to disable all pre-warm/update behavior.
 Environment=WOW_AUTOUPDATE=1
 # Optional tuning (uncomment to override): Environment=IDLE_SECS=180 QUIET_SECS=150 PREWARM_MAX_SECS=3600 COOLDOWN_SECS=1800
+# Auto-heal a stuck update (addon :bnet_tact loop) is on by default; disable: Environment=WOW_AUTOHEAL=0
 ExecStart=%h/.local/bin/wow-guard.sh
 Restart=always
 RestartSec=5
