@@ -192,6 +192,51 @@ prewarm_kill() {
     rm -f "$PREWARM_STAMP"
 }
 
+IDLE_PID=""
+
+# Start (and keep alive) the evdev idle reader. Disables the awake-idle layer gracefully
+# if python3 or a readable input device is unavailable (wake handling is unaffected).
+start_idle_watch() {
+    autoupdate_enabled || return 0
+    [ -n "$IDLE_PID" ] && kill -0 "$IDLE_PID" 2>/dev/null && return 0
+    python3 "$HOME/.local/bin/idle-watch.py" "$INPUT_STAMP" >>"$LOG" 2>&1 &
+    IDLE_PID=$!
+    sleep 1
+    kill -0 "$IDLE_PID" 2>/dev/null || { IDLE_PID=""; log "idle-watch unavailable - awake-idle pre-warm disabled (wake handling unaffected)"; }
+}
+
+# One iteration of the auto-update state machine. Extracted so it is unit-testable with
+# stubbed side-effects. $1 = wow_up (1 if WoW is running, else 0).
+autoupdate_tick() {
+    autoupdate_enabled || return 0
+    local wow_up="$1"
+    local idle; idle=$(idle_seconds "$INPUT_STAMP")
+
+    # Layer C: recover a stalled update whenever one is in progress (Play or pre-warm).
+    if [ "$wow_up" = 0 ] && update_stalled "$BNET_AGENT_LOGS" "$STALL_SECS"; then
+        recover_stalled_update
+    fi
+
+    start_idle_watch
+
+    # Headless pre-warm: only during a genuine idle window, never with WoW up.
+    if [ -n "$IDLE_PID" ] && should_prewarm 1 "$wow_up" "$idle" "$IDLE_SECS"; then
+        prewarm_running || prewarm_launch
+    fi
+
+    # Yield the prefix the instant the user is back (input) or WoW starts, when the
+    # download is done, or after a hard cap -> so a subsequent Play can resume the
+    # partial download (prefix lock allows only one program at a time).
+    if prewarm_running; then
+        if [ "$wow_up" = 1 ] || [ "$idle" -lt "$IDLE_SECS" ] || [ "$(prewarm_age)" -ge "$PREWARM_MAX_SECS" ]; then
+            prewarm_kill
+        elif ! update_active "$BNET_AGENT_LOGS" && [ "$(prewarm_age)" -ge 120 ]; then
+            log "pre-warm: nothing left to download (up to date) - closing"
+            prewarm_kill
+        fi
+    fi
+}
+
 restart_bnet() {
     log "restarting Battle.net ($1)"
     pkill -f "$BNET_RE"
@@ -254,6 +299,10 @@ main() {
     log "started (appid $APPID; existing WoW: ${!seen[*]})"
     last=$(date +%s)
 
+    cleanup() { prewarm_kill 2>/dev/null; [ -n "$IDLE_PID" ] && kill "$IDLE_PID" 2>/dev/null; }
+    trap cleanup EXIT TERM INT
+    start_idle_watch
+
     while sleep 1; do
         now=$(date +%s)
         gap=$((now - last)); last=$now
@@ -261,6 +310,7 @@ main() {
         # 2. woke up from a long sleep
         if [ $gap -gt $RESUME_MIN ]; then
             log "Deck woke up after $((gap / 60)) min"
+            prewarm_running && prewarm_kill
             if ! pgrep -x Wow.exe >/dev/null && bnet_running; then
                 wait_network || log "network slow to return after wake"
                 pgrep -x Wow.exe >/dev/null || restart_bnet "after sleep"
@@ -268,6 +318,10 @@ main() {
             last=$(date +%s)
             continue
         fi
+
+        # background auto-update: runs every second, whether or not WoW is up
+        wow_up=0; pgrep -x Wow.exe >/dev/null && wow_up=1
+        autoupdate_tick "$wow_up"
 
         mapfile -t pids < <(ps -C Wow.exe -o pid= --sort=start_time | tr -d ' ')
         [ ${#pids[@]} -eq 0 ] && { seen=(); continue; }
