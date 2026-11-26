@@ -66,6 +66,29 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 bnet_running() { pgrep -f "$BNET_RE" >/dev/null; }
 
+# An update is "active" when the newest Operations log's last OP_UPDATE line has no
+# matching "completed". (Agent markers confirmed in the on-Deck findings.)
+update_active() { # $1 = agent logs dir (searched recursively for Operations-*.log)
+    local f
+    f=$(ls -t "$1"/Operations-*.log "$1"/*/Logs/Operations-*.log 2>/dev/null | head -1)
+    [ -n "$f" ] || return 1
+    local last; last=$(grep -a 'OP_UPDATE for' "$f" | tail -1)
+    [ -n "$last" ] || return 1
+    case "$last" in *completed*) return 1 ;; *) return 0 ;; esac
+}
+
+# The saved session expired and needs a human: the expired marker appears with no
+# later "Logged into Battle.net successfully." in the newest launcher log.
+login_needed() { # $1 = launcher logs dir
+    local f; f=$(ls -t "$1"/battle.net-*.log 2>/dev/null | head -1)
+    [ -n "$f" ] || return 1
+    local exp ok
+    exp=$(grep -an -e 'Your login session has expired' -e 'BLZBNTBGS80000023' "$f" | tail -1 | cut -d: -f1)
+    [ -n "$exp" ] || return 1
+    ok=$(grep -an 'Logged into Battle.net successfully' "$f" | tail -1 | cut -d: -f1)
+    [ -z "$ok" ] || [ "$exp" -gt "$ok" ]   # expired is the most recent of the two
+}
+
 # Is background auto-update enabled? (default on; WOW_AUTOUPDATE=0 disables all new behavior)
 autoupdate_enabled() { [ "${WOW_AUTOUPDATE:-1}" != "0" ]; }
 
